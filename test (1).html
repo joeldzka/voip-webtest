@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>WebRTC VoIP Test</title>
+
+    <!-- JsSIP library -->
+    <script src="https://cdn.jsdelivr.net/npm/jssip/dist/jssip.min.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 700px;
+            margin: 40px auto;
+            padding: 20px;
+        }
+
+        input,
+        button {
+            padding: 10px;
+            margin: 5px 0;
+        }
+
+        input {
+            width: 250px;
+        }
+
+        button {
+            cursor: pointer;
+        }
+
+        #status {
+            padding: 10px;
+            margin: 15px 0;
+            background: #eee;
+        }
+
+        #log {
+            background: #111;
+            color: #0f0;
+            padding: 15px;
+            height: 250px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+    </style>
+</head>
+
+<body>
+
+<h2>WebRTC VoIP Test</h2>
+
+<label>Extension</label><br>
+<input id="extension" value="2001">
+
+<br>
+
+<label>Password</label><br>
+<input id="password" type="password" value="1234">
+
+<br>
+
+<button onclick="register()">REGISTER</button>
+<button onclick="unregister()">UNREGISTER</button>
+
+<div id="status">
+    Status: Not connected
+</div>
+
+<hr>
+
+<label>Call destination</label><br>
+<input id="destination" value="2002">
+
+<br>
+
+<button onclick="call()">CALL</button>
+<button onclick="hangup()">HANGUP</button>
+
+<br><br>
+
+<button onclick="mute()">MUTE / UNMUTE</button>
+
+<h3>Log</h3>
+
+<div id="log"></div>
+
+<audio id="remoteAudio" autoplay></audio>
+
+
+<script>
+
+let ua = null;
+let session = null;
+let muted = false;
+
+
+/* =========================================
+   SERVER CONFIGURATION
+   ========================================= */
+
+const WS_URL = "ws://192.168.56.19:8080/ws";
+const SIP_HOST = "192.168.56.19";
+
+
+/* =========================================
+   LOGGING
+   ========================================= */
+
+function log(message) {
+
+    const logElement = document.getElementById("log");
+
+    logElement.textContent += message + "\n";
+
+    logElement.scrollTop =
+        logElement.scrollHeight;
+
+    console.log(message);
+}
+
+
+function status(message) {
+
+    document.getElementById("status").textContent =
+        "Status: " + message;
+
+    log("[STATUS] " + message);
+}
+
+
+/* =========================================
+   REMOTE AUDIO
+   ========================================= */
+
+function attachRemoteAudio(pc) {
+
+    if (!pc || pc._audioAttached) {
+        return;
+    }
+
+    pc._audioAttached = true;
+
+    log("WebRTC PeerConnection created.");
+
+    pc.addEventListener("track", function(event) {
+
+        log("Remote audio received.");
+
+        const remoteAudio =
+            document.getElementById("remoteAudio");
+
+        remoteAudio.srcObject =
+            (event.streams && event.streams[0])
+                ? event.streams[0]
+                : new MediaStream([event.track]);
+
+        remoteAudio.play().catch(function(error) {
+
+            log("Audio error: " + error);
+
+        });
+
+    });
+
+}
+
+
+/* =========================================
+   REGISTER
+   ========================================= */
+
+function register() {
+
+    const extension =
+        document.getElementById("extension").value.trim();
+
+    const password =
+        document.getElementById("password").value;
+
+
+    if (!extension || !password) {
+
+        alert("Extension dan password wajib diisi.");
+
+        return;
+    }
+
+
+    if (typeof JsSIP === "undefined") {
+
+        status("ERROR: JsSIP tidak ditemukan.");
+
+        log("JsSIP library gagal dimuat.");
+
+        return;
+    }
+
+
+    if (ua) {
+
+        log("JsSIP UA sudah dibuat.");
+
+        return;
+    }
+
+
+    log("Creating JsSIP UA...");
+
+    log("WebSocket: " + WS_URL);
+
+    log(
+        "SIP URI: sip:" +
+        extension +
+        "@" +
+        SIP_HOST
+    );
+
+
+    /* =====================================
+       WEBSOCKET
+       ===================================== */
+
+    const socket =
+        new JsSIP.WebSocketInterface(WS_URL);
+
+
+    /* =====================================
+       SIP USER AGENT
+       ===================================== */
+
+    const configuration = {
+
+        sockets: [socket],
+
+        uri:
+            "sip:" +
+            extension +
+            "@" +
+            SIP_HOST,
+
+        password: password,
+
+        authorization_user: extension,
+
+        display_name: extension,
+
+        register: true,
+
+        register_expires: 300,
+
+        session_timers: false
+    };
+
+
+    ua = new JsSIP.UA(configuration);
+
+
+    /* =====================================
+       WEBSOCKET CONNECTED
+       ===================================== */
+
+    ua.on("connected", function() {
+
+        status("WebSocket connected");
+
+    });
+
+
+    /* =====================================
+       WEBSOCKET DISCONNECTED
+       ===================================== */
+
+    ua.on("disconnected", function() {
+
+        status("WebSocket disconnected");
+
+    });
+
+
+    /* =====================================
+       REGISTER SUCCESS
+       ===================================== */
+
+    ua.on("registered", function() {
+
+        status(
+            "REGISTERED as " +
+            extension
+        );
+
+    });
+
+
+    /* =====================================
+       REGISTER FAILED
+       ===================================== */
+
+    ua.on(
+        "registrationFailed",
+        function(e) {
+
+            status("REGISTER FAILED");
+
+            log(
+                "Cause: " +
+                (e.cause || "unknown")
+            );
+
+        }
+    );
+
+
+    /* =====================================
+       UNREGISTERED
+       ===================================== */
+
+    ua.on("unregistered", function() {
+
+        status("Unregistered");
+
+    });
+
+
+    /* =====================================
+       NEW SIP SESSION
+       ===================================== */
+
+    ua.on("newRTCSession", function(e) {
+
+        session = e.session;
+
+
+        log(
+            "New RTC session: " +
+            e.originator
+        );
+
+
+        /* =================================
+           PEER CONNECTION (must come BEFORE answer())
+           ================================= */
+
+        // Outgoing call: JsSIP creates the RTCPeerConnection
+        // BEFORE firing newRTCSession, so it already exists here.
+        if (session.connection) {
+            attachRemoteAudio(session.connection);
+        }
+
+        // Incoming call: answer() creates it, so listen first.
+        session.on("peerconnection", function(ev) {
+            attachRemoteAudio(ev.peerconnection);
+        });
+
+
+        /* =================================
+           INCOMING CALL
+           ================================= */
+
+        if (e.originator === "remote") {
+
+            log("Incoming call.");
+
+            session.answer({
+
+                mediaConstraints: {
+
+                    audio: true,
+
+                    video: false
+                }
+
+            });
+
+        }
+
+
+        /* =================================
+           CALL ACCEPTED
+           ================================= */
+
+        session.on("accepted", function() {
+
+            status("Call accepted");
+
+        });
+
+
+        /* =================================
+           CALL CONFIRMED
+           ================================= */
+
+        session.on("confirmed", function() {
+
+            status("Call confirmed");
+
+        });
+
+
+        /* =================================
+           CALL ENDED
+           ================================= */
+
+        session.on("ended", function(e) {
+
+            status("Call ended");
+
+            log(
+                "Reason: " +
+                (e.cause || "unknown")
+            );
+
+            session = null;
+
+        });
+
+
+        /* =================================
+           CALL FAILED
+           ================================= */
+
+        session.on("failed", function(e) {
+
+            status("Call failed");
+
+            log(
+                "Reason: " +
+                (e.cause || "unknown")
+            );
+
+            session = null;
+
+        });
+
+
+    });
+
+
+    /* =====================================
+       START UA
+       ===================================== */
+
+    ua.start();
+
+    log("JsSIP UA started.");
+
+}
+
+
+/* =========================================
+   UNREGISTER
+   ========================================= */
+
+function unregister() {
+
+    if (!ua) {
+
+        log("UA belum aktif.");
+
+        return;
+    }
+
+
+    ua.unregister();
+
+    status("Unregistering...");
+
+}
+
+
+/* =========================================
+   CALL
+   ========================================= */
+
+function call() {
+
+    if (!ua) {
+
+        alert(
+            "Register terlebih dahulu."
+        );
+
+        return;
+    }
+
+
+    const destination =
+        document
+            .getElementById("destination")
+            .value
+            .trim();
+
+
+    if (!destination) {
+
+        alert(
+            "Masukkan extension tujuan."
+        );
+
+        return;
+    }
+
+
+    const target =
+        "sip:" +
+        destination +
+        "@" +
+        SIP_HOST;
+
+
+    log(
+        "Calling " +
+        target
+    );
+
+
+    const options = {
+
+        mediaConstraints: {
+
+            audio: true,
+
+            video: false
+        },
+
+
+        pcConfig: {
+
+            iceServers: [
+
+                {
+                    urls:
+                        "stun:stun.l.google.com:19302"
+                }
+
+            ]
+
+        }
+
+    };
+
+
+    session =
+        ua.call(
+            target,
+            options
+        );
+
+
+    session.on(
+        "progress",
+        function() {
+
+            status("Ringing...");
+
+        }
+    );
+
+}
+
+
+/* =========================================
+   HANGUP
+   ========================================= */
+
+function hangup() {
+
+    if (!session) {
+
+        log("No active call.");
+
+        return;
+    }
+
+
+    log("Hanging up...");
+
+    session.terminate();
+
+    session = null;
+
+    status("Call terminated");
+
+}
+
+
+/* =========================================
+   MUTE
+   ========================================= */
+
+function mute() {
+
+    if (!session) {
+
+        log("No active call.");
+
+        return;
+    }
+
+
+    const pc =
+        session.connection;
+
+
+    if (!pc) {
+
+        log(
+            "PeerConnection belum tersedia."
+        );
+
+        return;
+    }
+
+
+    pc.getSenders().forEach(
+        function(sender) {
+
+            if (
+                sender.track &&
+                sender.track.kind === "audio"
+            ) {
+
+                sender.track.enabled =
+                    muted;
+
+            }
+
+        }
+    );
+
+
+    muted = !muted;
+
+
+    log(
+        muted
+            ? "Microphone muted"
+            : "Microphone unmuted"
+    );
+
+}
+
+</script>
+
+</body>
+</html>
